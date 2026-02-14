@@ -1,0 +1,241 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from statsmodels.tsa.regime_switching.markov_regression import MarkovRegression
+import warnings
+warnings.filterwarnings('ignore')
+
+# Configurazione per i grafici
+plt.style.use('seaborn-v0_8-darkgrid')
+plt.rcParams['figure.figsize'] = (15, 10)
+plt.rcParams['font.size'] = 10
+
+# ======================
+# 1. GENERAZIONE DATI SIMULATI
+# ======================
+
+np.random.seed(42)
+n_periods = 200
+
+# Generiamo dati che alternano tra due regimi:
+# Regime 0: Bassa inflazione (mean=2%, persistence=0.7)
+# Regime 1: Alta inflazione (mean=8%, persistence=0.9)
+
+# Processo di Markov nascosto per i regimi
+true_regime = np.zeros(n_periods)
+for t in range(1, n_periods):
+    if true_regime[t-1] == 0:
+        # Probabilità di rimanere in regime 0: 0.95, di passare a 1: 0.05
+        true_regime[t] = 0 if np.random.rand() < 0.95 else 1
+    else:
+        # Probabilità di rimanere in regime 1: 0.90, di passare a 0: 0.10
+        true_regime[t] = 1 if np.random.rand() < 0.90 else 0
+
+# Generiamo l'inflazione con processi AR(1) diversi per ciascun regime
+inflation = np.zeros(n_periods)
+inflation[0] = 2.0  # Valore iniziale
+
+for t in range(1, n_periods):
+    if true_regime[t] == 0:
+        # Regime di bassa inflazione
+        inflation[t] = 2.0 + 0.7 * (inflation[t-1] - 2.0) + np.random.normal(0, 0.5)
+    else:
+        # Regime di alta inflazione
+        inflation[t] = 8.0 + 0.9 * (inflation[t-1] - 8.0) + np.random.normal(0, 1.0)
+
+# Aggiungiamo una tendenza temporale come variabile esplicativa
+time_trend = np.arange(n_periods) / 100
+inflation = inflation + 0.5 * time_trend + np.random.normal(0, 0.3, n_periods)
+
+# Creiamo un DataFrame
+dates = pd.date_range(start='2005-01-01', periods=n_periods, freq='M')
+df = pd.DataFrame({
+    'Data': dates,
+    'Inflazione': inflation,
+    'Trend': time_trend,
+    'Regime_Vero': true_regime
+})
+
+# ======================
+# 2. STIMA DEL MODELLO MARKOV-SWITCHING
+# ======================
+
+model = MarkovRegression(
+    endog=df['Inflazione'], 
+    k_regimes=2,
+    trend='c',
+    exog=df['Trend'],
+    switching_variance=True
+)
+
+results = model.fit(search_reps=10, maxiter=1000)
+
+# Probabilità stimate di essere in ciascun regime
+regime_probabilities = results.smoothed_marginal_probabilities
+
+# Assegnamento del regime (0 o 1) in base alla probabilità più alta
+df['Regime_Stimato'] = np.argmax(regime_probabilities.values, axis=1)
+
+# grafici
+fig = plt.figure(figsize=(16, 12))
+fig.suptitle('Modello Markov-Switching per l\'Inflazione - Analisi Completa', 
+             fontsize=16, fontweight='bold', y=0.98)
+
+# 1.
+ax1 = plt.subplot(2, 2, 1)
+ax1.plot(df['Data'], df['Inflazione'], 'b-', linewidth=1.5, label='Inflazione osservata')
+ax1.fill_between(df['Data'], df['Inflazione'].min(), df['Inflazione'].max(), 
+                  where=(df['Regime_Vero']==1), color='red', alpha=0.3, label='Regime vero: Alta inflazione')
+ax1.fill_between(df['Data'], df['Inflazione'].min(), df['Inflazione'].max(),
+                  where=(df['Regime_Vero']==0), color='green', alpha=0.3, label='Regime vero: Bassa inflazione')
+ax1.set_title('(a) Inflazione Simulata e Regimi Veri', fontsize=12, fontweight='bold')
+ax1.set_ylabel('Inflazione (%)')
+ax1.legend(loc='upper left', fontsize=9)
+ax1.grid(True, alpha=0.3)
+ax1.tick_params(axis='x', rotation=45)
+
+# 2.
+ax2 = plt.subplot(2, 2, 2)
+ax2.plot(df['Data'], df['Inflazione'], 'b-', linewidth=1.5, label='Inflazione osservata')
+ax2.fill_between(df['Data'], df['Inflazione'].min(), df['Inflazione'].max(), 
+                  where=(df['Regime_Stimato']==1), color='red', alpha=0.3, label='Regime stimato: Alta inflazione')
+ax2.fill_between(df['Data'], df['Inflazione'].min(), df['Inflazione'].max(),
+                  where=(df['Regime_Stimato']==0), color='green', alpha=0.3, label='Regime stimato: Bassa inflazione')
+ax2.set_title('(b) Inflazione e Regimi Stimati dal Modello', fontsize=12, fontweight='bold')
+ax2.set_ylabel('Inflazione (%)')
+ax2.legend(loc='upper left', fontsize=9)
+ax2.grid(True, alpha=0.3)
+ax2.tick_params(axis='x', rotation=45)
+
+# 3.
+ax3 = plt.subplot(2, 2, 3)
+ax3.plot(df['Data'], regime_probabilities.iloc[:, 1], 'r-', linewidth=2, label='Probabilità di alta inflazione')
+ax3.axhline(y=0.5, color='k', linestyle='--', alpha=0.5, label='Soglia decisionale (0.5)')
+ax3.set_title('(c) Probabilità Stimata di Alta Inflazione', fontsize=12, fontweight='bold')
+ax3.set_ylabel('Probabilità')
+ax3.set_xlabel('Data')
+ax3.set_ylim(-0.05, 1.05)
+ax3.legend(loc='upper left', fontsize=9)
+ax3.grid(True, alpha=0.3)
+ax3.tick_params(axis='x', rotation=45)
+
+# 4.
+ax4 = plt.subplot(2, 2, 4)
+
+# setting dei grafici
+from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+
+regime_data = [df[df['Regime_Stimato']==0]['Inflazione'], 
+               df[df['Regime_Stimato']==1]['Inflazione']]
+boxplot = ax4.boxplot(regime_data, labels=['Bassa\ninflazione', 'Alta\ninflazione'], 
+                      patch_artist=True)
+
+colors = ['green', 'red']
+for patch, color in zip(boxplot['boxes'], colors):
+    patch.set_facecolor(color)
+    patch.set_alpha(0.6)
+
+ax4.set_title('(d) Distribuzione dell\'Inflazione per Regime', fontsize=12, fontweight='bold')
+ax4.set_ylabel('Inflazione (%)')
+ax4.grid(True, alpha=0.3)
+
+ax4_inset = inset_axes(ax4, width="40%", height="40%", loc='upper right', borderpad=1)
+ax4_inset.hist(df[df['Regime_Stimato']==0]['Inflazione'], bins=15, alpha=0.7, 
+               label='Bassa', color='green', density=True)
+ax4_inset.hist(df[df['Regime_Stimato']==1]['Inflazione'], bins=15, alpha=0.7, 
+               label='Alta', color='red', density=True)
+ax4_inset.set_xlabel('Inflaz.', fontsize=8)
+ax4_inset.set_ylabel('Densità', fontsize=8)
+ax4_inset.tick_params(labelsize=7)
+ax4_inset.legend(fontsize=7)
+ax4_inset.set_title('Distribuzioni', fontsize=9)
+
+stats_text = f'''
+Statistiche per regime:
+
+Bassa inflazione:
+  Media: {df[df["Regime_Stimato"]==0]["Inflazione"].mean():.2f}%
+  Std: {df[df["Regime_Stimato"]==0]["Inflazione"].std():.2f}%
+  
+Alta inflazione:
+  Media: {df[df["Regime_Stimato"]==1]["Inflazione"].mean():.2f}%
+  Std: {df[df["Regime_Stimato"]==1]["Inflazione"].std():.2f}%
+'''
+ax4.text(0.02, 0.02, stats_text, transform=ax4.transAxes, fontsize=8,
+         verticalalignment='bottom', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+# ======================
+# 4. REGOLAZIONE LAYOUT E VISUALIZZAZIONE
+# ======================
+
+plt.tight_layout(rect=[0, 0, 1, 0.96]) 
+
+legend_elements = [
+    plt.Line2D([0], [0], color='green', lw=4, alpha=0.5, label='Regime Bassa Inflazione'),
+    plt.Line2D([0], [0], color='red', lw=4, alpha=0.5, label='Regime Alta Inflazione'),
+    plt.Line2D([0], [0], color='blue', lw=1.5, label='Inflazione Osservata'),
+    plt.Line2D([0], [0], color='red', lw=2, label='Probabilità Alta Inflazione'),
+    plt.Line2D([0], [0], color='black', linestyle='--', lw=1, label='Soglia 0.5')
+]
+
+fig.legend(handles=legend_elements, loc='lower center', ncol=3, 
+           fontsize=10, bbox_to_anchor=(0.5, 0.01))
+
+# risultati numerici
+print("="*70)
+print("RISULTATI DEL MODELLO MARKOV-SWITCHING PER L'INFLATIONE")
+print("="*70)
+print(f"\nStatistiche descrittive:")
+print(f"  Media inflazione: {df['Inflazione'].mean():.2f}%")
+print(f"  Deviazione standard: {df['Inflazione'].std():.2f}%")
+print(f"  Minimo: {df['Inflazione'].min():.2f}%")
+print(f"  Massimo: {df['Inflazione'].max():.2f}%")
+
+print(f"\nDistribuzione dei regimi stimati:")
+print(f"  Periodi di bassa inflazione: {(df['Regime_Stimato']==0).sum()} ({(df['Regime_Stimato']==0).sum()/len(df)*100:.1f}%)")
+print(f"  Periodi di alta inflazione: {(df['Regime_Stimato']==1).sum()} ({(df['Regime_Stimato']==1).sum()/len(df)*100:.1f}%)")
+
+# Calcoliamo l'accuratezza
+accuracy = np.mean(df['Regime_Vero'] == df['Regime_Stimato'])
+print(f"\nAccuratezza del modello: {accuracy*100:.2f}%")
+
+# Matrice di transizione
+print(f"\nMatrice di transizione stimata:")
+transition_matrix = results.regime_transition
+print(f"  P(0→0): {transition_matrix[0, 0]:.4f}  |  P(0→1): {transition_matrix[0, 1]:.4f}")
+print(f"  P(1→0): {transition_matrix[1, 0]:.4f}  |  P(1→1): {transition_matrix[1, 1]:.4f}")
+
+plt.show()
+
+# ======================
+# 5. VISUALIZZAZIONE AGGIUNTIVA: CONFRONTO TEMPORALE
+# ======================
+
+# Opzionale: Un'altra figura per confronto temporale più dettagliato
+fig2, (ax5, ax6) = plt.subplots(2, 1, figsize=(14, 8))
+
+# Confronto diretto tra regime vero e stimato
+ax5.plot(df['Data'], df['Regime_Vero'], 'g-', linewidth=2, alpha=0.7, label='Regime Vero')
+ax5.plot(df['Data'], df['Regime_Stimato'], 'r--', linewidth=1.5, alpha=0.9, label='Regime Stimato')
+ax5.set_title('Confronto Diretto: Regime Vero vs Regime Stimato', fontsize=14, fontweight='bold')
+ax5.set_ylabel('Regime (0=Bassa, 1=Alta)')
+ax5.set_yticks([0, 1])
+ax5.set_yticklabels(['Bassa', 'Alta'])
+ax5.legend(loc='upper right')
+ax5.grid(True, alpha=0.3)
+ax5.tick_params(axis='x', rotation=45)
+
+# Differenza tra regime vero e stimato
+ax6.fill_between(df['Data'], 0, 1, where=(df['Regime_Vero'] != df['Regime_Stimato']), 
+                  color='red', alpha=0.3, label='Classificazione errata')
+ax6.fill_between(df['Data'], 0, 1, where=(df['Regime_Vero'] == df['Regime_Stimato']), 
+                  color='green', alpha=0.3, label='Classificazione corretta')
+ax6.set_title('Accuratezza della Classificazione nel Tempo', fontsize=14, fontweight='bold')
+ax6.set_xlabel('Data')
+ax6.set_ylabel('Accuratezza')
+ax6.legend(loc='upper right')
+ax6.grid(True, alpha=0.3)
+ax6.tick_params(axis='x', rotation=45)
+
+plt.tight_layout()
+plt.show()
